@@ -11,6 +11,7 @@
 We were given a Go binary called `encode` and an output file `enc.png`. The binary reads a plaintext file, encrypts it, and hides the result inside a PNG image using steganography. The goal was to fully reverse engineer the encryption scheme and extract the hidden flag.
 
 This challenge combined multiple layers of obfuscation:
+
 - **UPX packing** to prevent straightforward disassembly
 - Steganography (data hidden in PNG pixels)
 - Double AES-256-CBC encryption
@@ -59,15 +60,26 @@ pwndbg> vmmap
 
 After the stub runs and decompresses, the memory map changes. A new executable region appears — the real unpacked binary — starting around `0x400000` with `r-xp` (readable + executable) permissions.
 
-**Step 2: Set a hardware breakpoint at the OEP**
+**Step 2: Catching the binary mid-unpack — and my first run-in with hardware breakpoints**
 
-Rather than guessing when the stub had finished, we used a **hardware breakpoint** — the same technique we'd later rely on throughout the whole challenge. Software breakpoints (`b` in GDB/pwndbg) work by patching a byte in the instruction stream with `int3`. Hardware breakpoints use the CPU's built-in debug registers (`DR0`–`DR3`) and fire without touching any code. The syntax in pwndbg is:
+This is where things got annoying. My first instinct was to set a normal breakpoint at the OEP (the address the UPX stub would jump to once it finished decompressing) and let the binary run to it:
+
+```
+b *0x400000
+run
+```
+
+Nothing. The breakpoint was just silently skipped. I tried a few different addresses — same result every time. The binary would run, finish, and exit as if the breakpoint wasn't there at all.
+
+After some research I found out this is a known issue with Go binaries specifically. Go uses a cooperative scheduler — goroutines yield at certain "safe points" in the code. When GDB inserts a software breakpoint, it patches one byte of the instruction stream with an `int3` trap opcode. The Go runtime scans for these modified bytes during goroutine scheduling, treats them as preemption points, and migrates the goroutine to a different OS thread — jumping straight past the breakpoint. It fires zero times despite being set correctly.
+
+Then i researched and found something! The fix is **hardware breakpoints**. Instead of patching code, hardware breakpoints use the CPU's dedicated debug registers (`DR0`–`DR3`) and are completely invisible to the running process — no bytes are modified, nothing for the Go runtime to detect. In pwndbg the syntax is:
 
 ```
 hb *0x<address>
 ```
 
-We set a hardware breakpoint at the suspected OEP (Original Entry Point) — the address the UPX stub would jump to once decompression was done. Hardware breakpoints were essential here for the same reason they'd be essential later: the Go runtime and the UPX stub both do things that cause software breakpoints to be skipped or misfire. Hardware breakpoints bypass all of that entirely(more on this later).
+This worked immediately. From this point forward, every breakpoint in this challenge was a hardware breakpoint — `b` was useless on this binary.
 
 Once the breakpoint fired inside the unpacked code, `vmmap` showed the real executable region clearly. We used `vis` (pwndbg's visual memory inspector) to confirm we were looking at real Go code — recognizable by its function prologues and Go runtime patterns — rather than the UPX stub:
 
@@ -118,12 +130,12 @@ The output was nearly 200,000 lines. We focused on identifying key functions by 
 
 **Key functions identified:**
 
-| Address | Role |
-|---------|------|
+| Address    | Role                                                                  |
+| ---------- | --------------------------------------------------------------------- |
 | `0x4ae780` | Generates a random byte via `crypto/rand.Read`, XORs all data with it |
-| `0x4ae860` | Core encryption function (AES + PKCS7 padding) |
-| `0x4aec80` | Orchestrates the full encode pipeline |
-| `0x4aea60` | Writes encrypted bytes as PNG pixels |
+| `0x4ae860` | Core encryption function (AES + PKCS7 padding)                        |
+| `0x4aec80` | Orchestrates the full encode pipeline                                 |
+| `0x4aea60` | Writes encrypted bytes as PNG pixels                                  |
 
 ### Identifying the PNG Write Logic
 
@@ -204,11 +216,11 @@ After extracting the unpacked binary and running `objdump`, all the key function
 
 We identified the most valuable breakpoint locations from the static analysis:
 
-| Address | Why break here |
-|---------|---------------|
-| `0x4ae7c5` | Immediately after `crypto/rand.Read` — rand_byte is on the stack at `rsp+0x27` |
-| `0x4aeeb9` | Start of the index XOR loop — `r12` holds the 64-byte pre-XOR buffer |
-| `0x4aeed7` | End of XOR loop — `rax` holds the final output buffer |
+|Address|Why break here|
+|---|---|
+|`0x4ae7c5`|Immediately after `crypto/rand.Read` — rand_byte is on the stack at `rsp+0x27`|
+|`0x4aeeb9`|Start of the index XOR loop — `r12` holds the 64-byte pre-XOR buffer|
+|`0x4aeed7`|End of XOR loop — `rax` holds the final output buffer|
 
 The `0x4ae7c5` address was found by reading the disassembly of `0x4ae780` and identifying the instruction immediately after the `call 0x476ee0` (the `crypto/rand.Read` call). At that exact point the random byte has been written to the stack but hasn't been used yet, making it trivially readable.
 
@@ -246,17 +258,30 @@ x/64xb $r12
 
 ### Discovering the Hardcoded Key and IV
 
-By examining the stack at the XOR loop breakpoint, we could read the function arguments that were passed to the AES encryption call at `0x4ae860`:
+At the breakpoint for the AES encryption call at `0x4ae860`, we could read the key and IV directly off the stack:
 
 ```
 rsp+0x00 → 0xc000018140 → 52 fd fc 07 21 82 65 4f ...  (KEY, 32 bytes)
 rsp+0x18 → 0xc00001a120 → 81 85 5a d8 68 1d 0d 86 ...  (IV, 16 bytes)
 ```
 
-We re-ran the program several times. **Both the key and IV were identical on every run.** With 2¹²⁸ possible IVs, a collision is statistically impossible — these values are **hardcoded in the binary**.
+At first this just looked like "ok, we have the key" — but we re-ran the binary several more times and checked the same stack addresses each time. **The key and IV were byte-for-byte identical on every single run, regardless of what file was being encoded.**
+
+This is the proof they're not randomly generated. If the key came from a true random source, the probability of seeing the same 32-byte value twice is `1/2²⁵⁶` — effectively impossible. Seeing it happen 5 runs in a row means only one thing: the key was never random.
+
+The root cause, confirmed from source, is the same as rand_byte — **the author used `math/rand.Read()` for everything and never called `rand.Seed()`**. Go defaults to seed `1` when unseeded, so every call to `math/rand` produced the same sequence on every machine, forever. The key, IV, and rand_byte all came from the same sequential stream:
+
+```
+math/rand output (seed=1, never changed):
+  bytes  0–31  →  AES-256 key
+  bytes 32–47  →  AES-CBC IV
+  byte   48    →  rand_byte (= 0x66)
+```
+
+One mistake — using `math/rand` instead of `crypto/rand` and never seeding it — made every piece of cryptographic material in the binary completely predictable before it even ran. The encryption was broken by design, not by any flaw in AES itself.
 
 Key: `52fdfc072182654f163f5f0f9a621d729566c74d10037c4d7bbb0407d1e2c649`  
-IV:  `81855ad8681d0d86d1e91e00167939cb`
+IV: `81855ad8681d0d86d1e91e00167939cb`
 
 ### Capturing the rand_byte — and Why It Was Always the Same
 
@@ -273,9 +298,19 @@ x/1xb ($rsp + 0x27)
 
 This seems contradictory: the code calls `crypto/rand.Read`, which is supposed to read from the OS's cryptographically secure random source (`/dev/urandom` on Linux). That should produce a different byte every time. So why was it always `0x66`?
 
-The answer is that the binary was using a **deterministically seeded PRNG under the hood rather than true OS randomness**. In Go, if `crypto/rand.Reader` is replaced or wrapped with a custom reader that is seeded with a fixed value — or if the challenge author swapped out the real `crypto/rand` for a fake one backed by `math/rand` with a hardcoded seed — every call produces the same output regardless of when you run it. The binary *looked* like it was calling `crypto/rand.Read` in the disassembly, but the underlying reader had been seeded with a constant, making every "random" value completely predictable.
+The symbol name `crypto/rand.Read` was visible in the disassembly, but the challenge author had **replaced `crypto/rand.Reader` with a `math/rand` source seeded with a constant value of `1`**. In Go this looks like:
 
-This is a deliberate challenge design choice and a real-world vulnerability class: **code that appears to use secure randomness but actually uses a fixed seed is cryptographically broken**. The key, IV, and rand_byte being identical across every run meant the entire encryption scheme was deterministic — run the binary once in a debugger, read the values, and you can decrypt any output it ever produced.
+```go
+// what it looked like from the outside:
+crypto/rand.Read(buf)
+
+// what was actually happening underneath:
+crypto/rand.Reader = math/rand.New(math/rand.NewSource(1))
+```
+
+`math/rand.NewSource(1)` produces the exact same sequence of numbers on every run — it's a deterministic pseudorandom number generator, not a cryptographically secure one. Seed `1` always produces `0x66` as the first byte. The binary _looked_ like it was using secure randomness from the outside, but the reader had been quietly swapped out.
+
+This is a real-world vulnerability class: **code that appears to use `crypto/rand` but actually uses a fixed-seed `math/rand` is completely broken**. The probability of getting the same byte 5 runs in a row with true randomness is `(1/256)⁴` — about 1 in 4 billion. Once we observed it happening, we knew the seed was fixed. The key, IV, and rand_byte all being identical across every run meant the entire encryption scheme was deterministic — run the binary once in a debugger, capture the values, and you can decrypt anything it ever produces.
 
 ### Verifying the Double Encryption
 
@@ -394,9 +429,6 @@ Running the binary 5+ times through pwndbg and observing that `r12`, the key, th
 **How we confirmed double encryption:**  
 The orchestrator function called `0x4ae860` twice sequentially. After the first call returned `ct1`, the second call received `ct1` as its plaintext input. Decrypting once gave a non-printable 48-byte blob; decrypting that a second time yielded the PKCS7-padded flag.
 
-**Why the flag name fits:**  
-`d0ubl3_tr0ubl3` refers to the double AES-CBC encryption. `unkn0wn_bubbl3s` likely references the obfuscated rand_byte XOR. `734m_r0ck3t` is just swagger.
-
 ---
 
 ---
@@ -405,15 +437,14 @@ The orchestrator function called `0x4ae860` twice sequentially. After the first 
 
 This challenge required chaining together several disciplines that are directly relevant to security engineering roles:
 
-| Skill | Applied Here |
-|-------|-------------|
-| **Binary unpacking** | Manually defeated tampered UPX headers via ELF carving |
-| **Reverse engineering** | Read 200k lines of Go x86-64 disassembly to reconstruct the algorithm |
-| **Debugger proficiency** | Used pwndbg hardware breakpoints to overcome Go scheduler limitations |
-| **Cryptanalysis** | Identified AES mode from PKCS7 padding patterns in raw assembly |
-| **Dynamic analysis** | Proved hardcoded keys by observing identical values across multiple runs |
-| **Python scripting** | Wrote a clean multi-step decryption pipeline from scratch |
-
+| Skill                    | Applied Here                                                             |
+| ------------------------ | ------------------------------------------------------------------------ |
+| **Binary unpacking**     | Manually defeated tampered UPX headers via ELF carving                   |
+| **Reverse engineering**  | Read 200k lines of Go x86-64 disassembly to reconstruct the algorithm    |
+| **Debugger proficiency** | Used pwndbg hardware breakpoints to overcome Go scheduler limitations    |
+| **Cryptanalysis**        | Identified AES mode from PKCS7 padding patterns in raw assembly          |
+| **Dynamic analysis**     | Proved hardcoded keys by observing identical values across multiple runs |
+| **Python scripting**     | Wrote a clean multi-step decryption pipeline from scratch                |
 
 ## Flag
 
