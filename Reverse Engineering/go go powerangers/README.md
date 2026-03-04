@@ -67,7 +67,7 @@ Rather than guessing when the stub had finished, we used a **hardware breakpoint
 hb *0x<address>
 ```
 
-We set a hardware breakpoint at the suspected OEP (Original Entry Point) — the address the UPX stub would jump to once decompression was done. Hardware breakpoints were essential here for the same reason they'd be essential later: the Go runtime and the UPX stub both do things that cause software breakpoints to be skipped or misfire. Hardware breakpoints bypass all of that entirely.
+We set a hardware breakpoint at the suspected OEP (Original Entry Point) — the address the UPX stub would jump to once decompression was done. Hardware breakpoints were essential here for the same reason they'd be essential later: the Go runtime and the UPX stub both do things that cause software breakpoints to be skipped or misfire. Hardware breakpoints bypass all of that entirely(more on this later).
 
 Once the breakpoint fired inside the unpacked code, `vmmap` showed the real executable region clearly. We used `vis` (pwndbg's visual memory inspector) to confirm we were looking at real Go code — recognizable by its function prologues and Go runtime patterns — rather than the UPX stub:
 
