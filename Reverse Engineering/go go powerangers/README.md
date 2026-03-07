@@ -1,6 +1,5 @@
 # CTF Writeup: go go go powerangers — PNG Steganography + Double AES-CBC
 
-**Flag:** `dCRyp7{d0ubl3_tr0ubl3_f0ll0w3d_by_my_unkn0wn_bubbl3s_734m_r0ck3t}`  
 **Category:** Reverse Engineering / Cryptography  
 **Tools:** UPX, pwndbg, objdump, Python 3, cryptography library
 
