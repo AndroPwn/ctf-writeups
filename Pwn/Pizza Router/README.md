@@ -4,6 +4,7 @@
 **Category:** Binary Exploitation  
 **Difficulty:** Hardest pwn challenge in PicoCTF 2026  
 **Mitigations:** PIE, Stack Canary, NX, Full RELRO
+
 Also this was one of the only challenges which did not have a clear format it was in the form of flag{..}
 ---
 
