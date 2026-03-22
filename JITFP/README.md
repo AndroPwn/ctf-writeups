@@ -4,7 +4,6 @@ This challenge was from picoctf live event 2026 where i was one of the few peopl
 
 **Category:** Reverse Engineering  
 **Platform:** picoCTF  
-**Flag:** `picoCTF{pr0cf5_d36ugg3r_1687e00c}`
 
 ---
 
