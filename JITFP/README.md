@@ -56,8 +56,6 @@ Key facts:
 strings ad7e550b
 # Usage: %s <flag>
 # Incorrect
-# Correct
-# pr0cf5_d36ugg3r   ← the hint!
 ```
 
 ### Disassembly
