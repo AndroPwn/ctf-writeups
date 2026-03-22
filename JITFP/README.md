@@ -4,29 +4,8 @@ This challenge was from picoctf live event 2026 where i was one of the few peopl
 
 **Category:** Reverse Engineering  
 **Platform:** picoCTF  
+**Points:** 500
 
----
-
-## The Challenge Name
-
-**JITFP** = Just In Time Flag Printing
-
-The binary name after extracting: **`ad7e550b`**
-
-But the real hint was hidden inside the binary itself. Running `strings` on it revealed:
-```
-pr0cf5_d36ugg3r
-```
-
-Decode that leet speak:
-```
-pr0cf5   =  procfs   =  /proc filesystem
-d36ugg3r =  debugger
-```
-
-The challenge was **literally telling us the solution in its own name** — use the Linux `/proc` filesystem to debug the process and read its memory.
-
----
 
 ## Step 1: Getting the Binary from SSH
 
