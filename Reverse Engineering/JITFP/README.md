@@ -118,6 +118,7 @@ So at each position `j`, the binary asks:
 ## Step 3: Why We Couldn't Get the Flag Locally
 
 We tried patching the binary to run on our local machine with glibc instead of musl:
+Also tried manually populating the table so it actually has a sequence to crosscheck
 
 ```python
 # patch interpreter:
@@ -127,12 +128,14 @@ We tried patching the binary to run on our local machine with glibc instead of m
 ```
 
 It ran — but gave the completely wrong flag `EwlGzejhtxfAsBqbipcodnyvmrgkDCuFa`.
+Expected since we manually populated the table
 
 **Why?** Musl and glibc initialize table2 differently. The shuffle sequence on glibc is completely different from musl. This is exactly what the challenge description warned:
 
 > *"The catch is it only functions properly on the host on which we found it."*
 
 The flag could only be extracted correctly from the **live musl binary running on the remote server.**
+I later got to know there was a script in /root which was populating the table which we didnt have access to
 
 ---
 
