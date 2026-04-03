@@ -318,7 +318,6 @@ We noticed the function `0x4ae860` was called **twice** in the orchestrator. By 
 1. **Call 1:** Encrypts the file content → produces `ct1`
 2. **Call 2:** Encrypts `ct1` → produces `r12`
 
-The flag name `d0ubl3_tr0ubl3` hints at this. The r12 buffer is thus the result of **double AES-CBC encryption**.
 
 ---
 
